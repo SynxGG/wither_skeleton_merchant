@@ -14,9 +14,12 @@ import net.minecraft.nbt.StringTag;
 import net.minecraft.nbt.Tag;
 import net.minecraft.network.protocol.Packet;
 import net.minecraft.network.protocol.game.ClientGamePacketListener;
+import net.minecraft.network.chat.Component;
 import net.minecraft.sounds.SoundEvent;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.world.Difficulty;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.InteractionResult;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.damagesource.DamageTypes;
 import net.minecraft.world.entity.EntityType;
@@ -27,6 +30,7 @@ import net.minecraft.world.entity.ai.attributes.AttributeSupplier;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.monster.Monster;
 import net.minecraft.world.entity.npc.WanderingTrader;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.trading.MerchantOffer;
 import net.minecraft.world.item.trading.MerchantOffers;
 import net.minecraft.world.level.Level;
@@ -81,6 +85,25 @@ public class WitherSkeletonMerchantEntity extends WanderingTrader {
     @Override
     protected void updateTrades() {
         rebuildTradesFromConfig(false);
+    }
+
+    /**
+     * Keeps vanilla Wandering Trader interaction, while making an empty or
+     * invalid JSON configuration visible instead of silently doing nothing.
+     */
+    @Override
+    public InteractionResult mobInteract(Player player, InteractionHand hand) {
+        if (!this.level().isClientSide) {
+            TradeConfigManager.ensureLoaded();
+            if (this.getOffers().isEmpty()) {
+                player.sendSystemMessage(Component.literal(
+                    "Wither Skeleton Merchant: no valid enabled trade is loaded. "
+                        + "Check config/wither_skeleton_merchant/trades and latest.log."
+                ));
+                return InteractionResult.CONSUME;
+            }
+        }
+        return super.mobInteract(player, hand);
     }
 
     @Override
