@@ -1,0 +1,60 @@
+{
+  "mod_elements": [
+    {
+      "name": "WitherSkeletonMerchant",
+      "type": "livingentity",
+      "compiles": true,
+      "locked_code": false,
+      "registry_name": "wither_skeleton_merchant",
+      "metadata": {
+        "files": [
+          "src/main/java/witherskeletonmerchant/client/renderer/WitherSkeletonMerchantRenderer.java",
+          "src/main/java/witherskeletonmerchant/entity/WitherSkeletonMerchantEntity.java",
+          "src/main/resources/assets/wither_skeleton_merchant/models/item/wither_skeleton_merchant_spawn_egg.json",
+          "src/main/resources/data/wither_skeleton_merchant/forge/biome_modifier/wither_skeleton_merchant_biome_modifier.json"
+        ]
+      }
+    }
+  ],
+  "variable_elements": [],
+  "sound_elements": [],
+  "tag_elements": {},
+  "tab_element_order": {},
+  "language_map": {
+    "en_us": {
+      "entity.wither_skeleton_merchant.wither_skeleton_merchant": "Wither Skeleton Merchant",
+      "item.wither_skeleton_merchant.wither_skeleton_merchant_spawn_egg": "Wither Skeleton Merchant Spawn Egg"
+    }
+  },
+  "metadata": {
+    "files": [
+      "src/main/java/witherskeletonmerchant/init/WitherSkeletonMerchantModItems.java",
+      "src/main/java/witherskeletonmerchant/init/WitherSkeletonMerchantModEntityRenderers.java",
+      "src/main/java/witherskeletonmerchant/init/WitherSkeletonMerchantModEntities.java",
+      "src/main/resources/META-INF/mods.toml",
+      "src/main/resources/pack.mcmeta",
+      "src/main/java/witherskeletonmerchant/init/WitherSkeletonMerchantModTabs.java",
+      "src/main/java/witherskeletonmerchant/WitherSkeletonMerchantMod.java"
+    ]
+  },
+  "foldersRoot": {
+    "name": "~",
+    "children": []
+  },
+  "workspaceSettings": {
+    "modid": "wither_skeleton_merchant",
+    "modName": "Wither Skeleton Merchant",
+    "version": "1.0.0",
+    "author": "MCreator",
+    "websiteURL": "https://mcreator.net",
+    "license": "Not specified",
+    "serverSideOnly": false,
+    "requiredMods": [],
+    "dependencies": [],
+    "dependants": [],
+    "mcreatorDependencies": [],
+    "currentGenerator": "forge-1.20.1",
+    "modElementsPackage": "witherskeletonmerchant"
+  },
+  "mcreatorVersion": 202600114619
+}
