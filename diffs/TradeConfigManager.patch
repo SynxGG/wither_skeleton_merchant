@@ -1,0 +1,32 @@
+--- a/TradeConfigManager.java
++++ b/TradeConfigManager.java
+@@ -75,6 +75,7 @@
+           },
+           "max_uses": 1,
+           "cooldown_ticks": 72000,
++          "restock": true,
+           "merchant_xp": 0,
+           "price_multiplier": 0.0
+         }
+@@ -155,6 +156,21 @@
+             && enabled.stream().noneMatch(TradeDefinition::isGuaranteed)
+             && enabled.stream().noneMatch(definition -> definition.getWeight() > 0)) {
+             warnings.add("Weighted mode has no guaranteed trade and every enabled weight is 0.");
++        }
++
++        for (TradeDefinition definition : enabled) {
++            if (!definition.shouldRestock() && definition.getCooldownTicks() > 0L) {
++                warnings.add(
++                    "Trade '" + definition.getId()
++                        + "': cooldown_ticks is ignored because restock is false."
++                );
++            }
++            if (!definition.shouldRestock() && definition.getConfiguredMaxUses() == -1) {
++                warnings.add(
++                    "Trade '" + definition.getId()
++                        + "': restock=false has no effect while max_uses is -1."
++                );
++            }
+         }
+ 
+         snapshot = new Snapshot(

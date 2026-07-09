@@ -1,0 +1,15 @@
+--- a/src/main/java/witherskeletonmerchant/entity/WitherSkeletonMerchantEntity.java
++++ b/src/main/java/witherskeletonmerchant/entity/WitherSkeletonMerchantEntity.java
+@@ -316,8 +316,10 @@
+ 
+         lastBuiltOfferCount = rebuilt.size();
+ 
+-        // Set the AbstractVillager offer field through the vanilla method.
+-        this.overrideOffers(rebuilt);
++        // AbstractVillager#overrideOffers is intended for the merchant
++        // synchronization contract and does not replace the server entity's
++        // protected offer storage here. Assign the inherited field directly.
++        this.offers = rebuilt;
+ 
+         WitherSkeletonMerchantMod.LOGGER.info(
+             "[WSM trades] Merchant {} rebuild complete: enabled={}, selected={}, built={}, effective={}",

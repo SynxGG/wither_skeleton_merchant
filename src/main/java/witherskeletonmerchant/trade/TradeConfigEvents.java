@@ -47,6 +47,8 @@ public final class TradeConfigEvents {
                     .executes(context -> refresh(context.getSource(), true)))
                 .then(Commands.literal("status")
                     .executes(context -> status(context.getSource())))
+                .then(Commands.literal("diagnose")
+                    .executes(context -> diagnose(context.getSource())))
         );
     }
 
@@ -100,6 +102,44 @@ public final class TradeConfigEvents {
                 "WSM: selection_mode=" + general.getSelectionMode()
                     + ", offers_per_merchant=" + general.getOffersPerMerchant()
                     + ". Use /wsm reload after editing JSON."
+            ),
+            false
+        );
+        return 1;
+    }
+
+    private static int diagnose(CommandSourceStack source) {
+        TradeConfigManager.ensureLoaded();
+
+        int merchants = 0;
+        int selected = 0;
+        int built = 0;
+        int effective = 0;
+
+        for (ServerLevel level : source.getServer().getAllLevels()) {
+            for (Entity entity : level.getAllEntities()) {
+                if (entity instanceof WitherSkeletonMerchantEntity merchant) {
+                    merchants++;
+                    selected += merchant.getLastSelectedDefinitionCount();
+                    built += merchant.getLastBuiltOfferCount();
+                    effective += merchant.getEffectiveOfferCount();
+                }
+            }
+        }
+
+        int finalMerchants = merchants;
+        int finalSelected = selected;
+        int finalBuilt = built;
+        int finalEffective = effective;
+
+        source.sendSuccess(
+            () -> Component.literal(
+                "WSM diagnose: config=" + TradeConfigManager.getConfigRoot()
+                    + ", enabled=" + TradeConfigManager.getEnabledTradeCount()
+                    + ", loaded_merchants=" + finalMerchants
+                    + ", selected=" + finalSelected
+                    + ", built=" + finalBuilt
+                    + ", effective=" + finalEffective
             ),
             false
         );

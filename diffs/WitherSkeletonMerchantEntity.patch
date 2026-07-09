@@ -1,0 +1,175 @@
+--- a/WitherSkeletonMerchantEntity.java
++++ b/WitherSkeletonMerchantEntity.java
+@@ -40,8 +40,10 @@
+ 
+ import java.util.ArrayList;
+ import java.util.HashMap;
++import java.util.HashSet;
+ import java.util.List;
+ import java.util.Map;
++import java.util.Set;
+ 
+ /**
+  * Stage 2: vanilla merchant GUI backed by standalone JSON trade definitions.
+@@ -54,10 +56,12 @@
+     private static final String NBT_TRADE_IDS = "WSMTradeIds";
+     private static final String NBT_COOLDOWN_ENDS = "WSMCooldownEnds";
+     private static final String NBT_COOLDOWN_DURATIONS = "WSMCooldownDurations";
++    private static final String NBT_PERMANENTLY_EXHAUSTED_IDS = "WSMPermanentlyExhaustedTradeIds";
+ 
+     private final List<String> activeTradeIds = new ArrayList<>();
+     private final Map<String, Long> cooldownEnds = new HashMap<>();
+     private final Map<String, Long> cooldownDurations = new HashMap<>();
++    private final Set<String> permanentlyExhaustedTradeIds = new HashSet<>();
+ 
+     private boolean pendingTradeConfigReload;
+     private boolean pendingPreserveCooldowns = true;
+@@ -139,9 +143,23 @@
+     @Override
+     public void notifyTrade(MerchantOffer offer) {
+         super.notifyTrade(offer);
+-        if (!this.level().isClientSide && offer.isOutOfStock()) {
+-            scheduleCooldownFor(offer);
+-        }
++
++        if (this.level().isClientSide || !offer.isOutOfStock()) {
++            return;
++        }
++
++        String id = getTradeIdForOffer(offer);
++        if (id == null) {
++            return;
++        }
++
++        if (!shouldRestock(id)) {
++            permanentlyExhaustedTradeIds.add(id);
++            cooldownEnds.remove(id);
++            return;
++        }
++
++        scheduleCooldownFor(id, offer);
+     }
+ 
+     @Override
+@@ -207,6 +225,12 @@
+             durations.putLong(entry.getKey(), entry.getValue());
+         }
+         tag.put(NBT_COOLDOWN_DURATIONS, durations);
++
++        ListTag permanentlyExhausted = new ListTag();
++        for (String id : permanentlyExhaustedTradeIds) {
++            permanentlyExhausted.add(StringTag.valueOf(id));
++        }
++        tag.put(NBT_PERMANENTLY_EXHAUSTED_IDS, permanentlyExhausted);
+     }
+ 
+     @Override
+@@ -216,6 +240,7 @@
+         activeTradeIds.clear();
+         cooldownEnds.clear();
+         cooldownDurations.clear();
++        permanentlyExhaustedTradeIds.clear();
+ 
+         if (tag.contains(NBT_TRADE_IDS, Tag.TAG_LIST)) {
+             ListTag ids = tag.getList(NBT_TRADE_IDS, Tag.TAG_STRING);
+@@ -235,6 +260,13 @@
+             CompoundTag durations = tag.getCompound(NBT_COOLDOWN_DURATIONS);
+             for (String id : durations.getAllKeys()) {
+                 cooldownDurations.put(id, durations.getLong(id));
++            }
++        }
++
++        if (tag.contains(NBT_PERMANENTLY_EXHAUSTED_IDS, Tag.TAG_LIST)) {
++            ListTag exhausted = tag.getList(NBT_PERMANENTLY_EXHAUSTED_IDS, Tag.TAG_STRING);
++            for (int index = 0; index < exhausted.size(); index++) {
++                permanentlyExhaustedTradeIds.add(exhausted.getString(index));
+             }
+         }
+ 
+@@ -289,12 +321,24 @@
+                 activeTradeIds.add(id);
+                 cooldownDurations.put(id, definition.getCooldownTicks());
+ 
+-                Long cooldownEnd = cooldownEnds.get(id);
+-                if (cooldownEnd != null) {
+-                    if (cooldownEnd > now) {
++                if (!definition.shouldRestock()) {
++                    // A non-restocking offer remains sold out for this merchant,
++                    // including after chunk unloads, restarts, and JSON reloads.
++                    cooldownEnds.remove(id);
++                    if (permanentlyExhaustedTradeIds.contains(id)) {
+                         offer.setToOutOfStock();
+-                    } else {
+-                        cooldownEnds.remove(id);
++                    }
++                } else {
++                    // Changing restock from false to true re-enables the offer.
++                    permanentlyExhaustedTradeIds.remove(id);
++
++                    Long cooldownEnd = cooldownEnds.get(id);
++                    if (cooldownEnd != null) {
++                        if (cooldownEnd > now) {
++                            offer.setToOutOfStock();
++                        } else {
++                            cooldownEnds.remove(id);
++                        }
+                     }
+                 }
+ 
+@@ -331,13 +375,20 @@
+         );
+     }
+ 
+-    private void scheduleCooldownFor(MerchantOffer offer) {
++    private String getTradeIdForOffer(MerchantOffer offer) {
+         int index = this.getOffers().indexOf(offer);
+         if (index < 0 || index >= activeTradeIds.size()) {
+-            return;
+-        }
+-
+-        String id = activeTradeIds.get(index);
++            return null;
++        }
++        return activeTradeIds.get(index);
++    }
++
++    private boolean shouldRestock(String id) {
++        TradeDefinition definition = TradeConfigManager.getById(id);
++        return definition == null || definition.shouldRestock();
++    }
++
++    private void scheduleCooldownFor(String id, MerchantOffer offer) {
+         long duration = getCooldownDuration(id);
+ 
+         if (duration <= 0L) {
+@@ -357,6 +408,19 @@
+         for (int index = 0; index < count; index++) {
+             MerchantOffer offer = offers.get(index);
+             String id = activeTradeIds.get(index);
++
++            if (!shouldRestock(id)) {
++                cooldownEnds.remove(id);
++
++                if (offer.isOutOfStock()) {
++                    permanentlyExhaustedTradeIds.add(id);
++                } else if (permanentlyExhaustedTradeIds.contains(id)) {
++                    offer.setToOutOfStock();
++                }
++                continue;
++            }
++
++            permanentlyExhaustedTradeIds.remove(id);
+ 
+             if (!offer.isOutOfStock()) {
+                 continue;
+@@ -399,6 +463,10 @@
+ 
+     public int getEffectiveOfferCount() {
+         return this.getOffers().size();
++    }
++
++    public int getPermanentlyExhaustedTradeCount() {
++        return permanentlyExhaustedTradeIds.size();
+     }
+ 
+     @Override

@@ -75,6 +75,7 @@ public final class TradeConfigManager {
           },
           "max_uses": 1,
           "cooldown_ticks": 72000,
+          "restock": true,
           "merchant_xp": 0,
           "price_multiplier": 0.0
         }
@@ -157,6 +158,21 @@ public final class TradeConfigManager {
             warnings.add("Weighted mode has no guaranteed trade and every enabled weight is 0.");
         }
 
+        for (TradeDefinition definition : enabled) {
+            if (!definition.shouldRestock() && definition.getCooldownTicks() > 0L) {
+                warnings.add(
+                    "Trade '" + definition.getId()
+                        + "': cooldown_ticks is ignored because restock is false."
+                );
+            }
+            if (!definition.shouldRestock() && definition.getConfiguredMaxUses() == -1) {
+                warnings.add(
+                    "Trade '" + definition.getId()
+                        + "': restock=false has no effect while max_uses is -1."
+                );
+            }
+        }
+
         snapshot = new Snapshot(
             general,
             List.copyOf(all),
@@ -189,6 +205,25 @@ public final class TradeConfigManager {
     public static TradeDefinition getById(String id) {
         ensureLoaded();
         return snapshot.byId.get(id);
+    }
+
+    /**
+     * Immutable snapshot of every enabled and validated definition.
+     * Exposed so an entity can recover if weighted selection unexpectedly
+     * returns no result while valid definitions still exist.
+     */
+    public static List<TradeDefinition> getEnabledTrades() {
+        ensureLoaded();
+        return snapshot.enabled;
+    }
+
+    public static int getEnabledTradeCount() {
+        ensureLoaded();
+        return snapshot.enabled.size();
+    }
+
+    public static Path getConfigRoot() {
+        return ROOT;
     }
 
     public static List<TradeDefinition> selectOffers(RandomSource random) {
@@ -235,6 +270,17 @@ public final class TradeConfigManager {
                 }
             }
             selected.add(candidates.remove(selectedIndex));
+        }
+
+        if (selected.isEmpty() && !enabled.isEmpty()) {
+            WitherSkeletonMerchantMod.LOGGER.error(
+                "[WSM trades] Selection produced 0 offer(s) despite {} enabled definition(s). "
+                    + "Falling back to all enabled definitions. mode={}, offers_per_merchant={}",
+                enabled.size(),
+                general.getSelectionMode(),
+                general.getOffersPerMerchant()
+            );
+            return enabled;
         }
 
         return List.copyOf(selected);

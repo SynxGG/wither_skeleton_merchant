@@ -30,6 +30,7 @@ public final class TradeDefinition {
     private DemandDefinition demand;
     private Integer max_uses;
     private Long cooldown_ticks;
+    private Boolean restock;
     private Integer merchant_xp;
     private Float price_multiplier;
 
@@ -59,6 +60,13 @@ public final class TradeDefinition {
 
     public long getCooldownTicks() {
         return cooldown_ticks == null ? 0L : cooldown_ticks;
+    }
+
+    /**
+     * Missing field keeps the pre-v0.2.5 behavior: the offer restocks.
+     */
+    public boolean shouldRestock() {
+        return restock == null || restock;
     }
 
     public int getMerchantXp() {

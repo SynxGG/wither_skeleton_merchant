@@ -1,5 +1,6 @@
 package witherskeletonmerchant.entity;
 
+import witherskeletonmerchant.WitherSkeletonMerchantMod;
 import witherskeletonmerchant.init.WitherSkeletonMerchantModEntities;
 import witherskeletonmerchant.trade.TradeConfigManager;
 import witherskeletonmerchant.trade.TradeDefinition;
@@ -39,8 +40,10 @@ import net.minecraft.world.level.levelgen.Heightmap;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Stage 2: vanilla merchant GUI backed by standalone JSON trade definitions.
@@ -53,14 +56,19 @@ public class WitherSkeletonMerchantEntity extends WanderingTrader {
     private static final String NBT_TRADE_IDS = "WSMTradeIds";
     private static final String NBT_COOLDOWN_ENDS = "WSMCooldownEnds";
     private static final String NBT_COOLDOWN_DURATIONS = "WSMCooldownDurations";
+    private static final String NBT_PERMANENTLY_EXHAUSTED_IDS = "WSMPermanentlyExhaustedTradeIds";
 
     private final List<String> activeTradeIds = new ArrayList<>();
     private final Map<String, Long> cooldownEnds = new HashMap<>();
     private final Map<String, Long> cooldownDurations = new HashMap<>();
+    private final Set<String> permanentlyExhaustedTradeIds = new HashSet<>();
 
     private boolean pendingTradeConfigReload;
     private boolean pendingPreserveCooldowns = true;
     private boolean needsLegacyTradeMigration;
+
+    private int lastSelectedDefinitionCount;
+    private int lastBuiltOfferCount;
 
     public WitherSkeletonMerchantEntity(PlayMessages.SpawnEntity packet, Level level) {
         this(WitherSkeletonMerchantModEntities.WITHER_SKELETON_MERCHANT.get(), level);
@@ -112,9 +120,19 @@ public class WitherSkeletonMerchantEntity extends WanderingTrader {
             ensureConfiguredOffers();
 
             if (this.getOffers().isEmpty()) {
+                // One last forced rebuild avoids keeping a stale empty
+                // MerchantOffers object after summon/load/reload.
+                rebuildTradesFromConfig(true);
+            }
+
+            if (this.getOffers().isEmpty()) {
+                int enabled = TradeConfigManager.getEnabledTradeCount();
                 player.sendSystemMessage(Component.literal(
-                    "Wither Skeleton Merchant: the JSON loader returned no usable offer. "
-                        + "Check config/wither_skeleton_merchant/trades and latest.log."
+                    "Wither Skeleton Merchant: 0 usable offer after rebuild "
+                        + "(enabled JSON=" + enabled
+                        + ", selected=" + lastSelectedDefinitionCount
+                        + ", built=" + lastBuiltOfferCount
+                        + "). Check latest.log."
                 ));
                 return InteractionResult.CONSUME;
             }
@@ -125,9 +143,23 @@ public class WitherSkeletonMerchantEntity extends WanderingTrader {
     @Override
     public void notifyTrade(MerchantOffer offer) {
         super.notifyTrade(offer);
-        if (!this.level().isClientSide && offer.isOutOfStock()) {
-            scheduleCooldownFor(offer);
+
+        if (this.level().isClientSide || !offer.isOutOfStock()) {
+            return;
         }
+
+        String id = getTradeIdForOffer(offer);
+        if (id == null) {
+            return;
+        }
+
+        if (!shouldRestock(id)) {
+            permanentlyExhaustedTradeIds.add(id);
+            cooldownEnds.remove(id);
+            return;
+        }
+
+        scheduleCooldownFor(id, offer);
     }
 
     @Override
@@ -193,6 +225,12 @@ public class WitherSkeletonMerchantEntity extends WanderingTrader {
             durations.putLong(entry.getKey(), entry.getValue());
         }
         tag.put(NBT_COOLDOWN_DURATIONS, durations);
+
+        ListTag permanentlyExhausted = new ListTag();
+        for (String id : permanentlyExhaustedTradeIds) {
+            permanentlyExhausted.add(StringTag.valueOf(id));
+        }
+        tag.put(NBT_PERMANENTLY_EXHAUSTED_IDS, permanentlyExhausted);
     }
 
     @Override
@@ -202,6 +240,7 @@ public class WitherSkeletonMerchantEntity extends WanderingTrader {
         activeTradeIds.clear();
         cooldownEnds.clear();
         cooldownDurations.clear();
+        permanentlyExhaustedTradeIds.clear();
 
         if (tag.contains(NBT_TRADE_IDS, Tag.TAG_LIST)) {
             ListTag ids = tag.getList(NBT_TRADE_IDS, Tag.TAG_STRING);
@@ -221,6 +260,13 @@ public class WitherSkeletonMerchantEntity extends WanderingTrader {
             CompoundTag durations = tag.getCompound(NBT_COOLDOWN_DURATIONS);
             for (String id : durations.getAllKeys()) {
                 cooldownDurations.put(id, durations.getLong(id));
+            }
+        }
+
+        if (tag.contains(NBT_PERMANENTLY_EXHAUSTED_IDS, Tag.TAG_LIST)) {
+            ListTag exhausted = tag.getList(NBT_PERMANENTLY_EXHAUSTED_IDS, Tag.TAG_STRING);
+            for (int index = 0; index < exhausted.size(); index++) {
+                permanentlyExhaustedTradeIds.add(exhausted.getString(index));
             }
         }
 
@@ -250,40 +296,99 @@ public class WitherSkeletonMerchantEntity extends WanderingTrader {
         }
 
         List<TradeDefinition> selected = TradeConfigManager.selectOffers(this.getRandom());
+
+        // Defensive recovery: the loader can report valid enabled definitions
+        // while a selection policy still returns an empty list. Stage 2 must
+        // never silently discard those valid trades.
+        if (selected.isEmpty() && TradeConfigManager.getEnabledTradeCount() > 0) {
+            selected = TradeConfigManager.getEnabledTrades();
+        }
+
+        lastSelectedDefinitionCount = selected.size();
+
         MerchantOffers rebuilt = new MerchantOffers();
         activeTradeIds.clear();
         cooldownDurations.clear();
 
         long now = this.level().getGameTime();
+
         for (TradeDefinition definition : selected) {
             String id = definition.getId();
-            MerchantOffer offer = definition.createMerchantOffer();
 
-            activeTradeIds.add(id);
-            cooldownDurations.put(id, definition.getCooldownTicks());
+            try {
+                MerchantOffer offer = definition.createMerchantOffer();
 
-            Long cooldownEnd = cooldownEnds.get(id);
-            if (cooldownEnd != null) {
-                if (cooldownEnd > now) {
-                    offer.setToOutOfStock();
-                } else {
+                activeTradeIds.add(id);
+                cooldownDurations.put(id, definition.getCooldownTicks());
+
+                if (!definition.shouldRestock()) {
+                    // A non-restocking offer remains sold out for this merchant,
+                    // including after chunk unloads, restarts, and JSON reloads.
                     cooldownEnds.remove(id);
-                }
-            }
+                    if (permanentlyExhaustedTradeIds.contains(id)) {
+                        offer.setToOutOfStock();
+                    }
+                } else {
+                    // Changing restock from false to true re-enables the offer.
+                    permanentlyExhaustedTradeIds.remove(id);
 
-            rebuilt.add(offer);
+                    Long cooldownEnd = cooldownEnds.get(id);
+                    if (cooldownEnd != null) {
+                        if (cooldownEnd > now) {
+                            offer.setToOutOfStock();
+                        } else {
+                            cooldownEnds.remove(id);
+                        }
+                    }
+                }
+
+                rebuilt.add(offer);
+                WitherSkeletonMerchantMod.LOGGER.info(
+                    "[WSM trades] Built offer '{}' for merchant {}",
+                    id,
+                    this.getUUID()
+                );
+            } catch (RuntimeException exception) {
+                WitherSkeletonMerchantMod.LOGGER.error(
+                    "[WSM trades] Failed to build offer '{}' for merchant {}",
+                    id,
+                    this.getUUID(),
+                    exception
+                );
+            }
         }
 
-        this.overrideOffers(rebuilt);
+        lastBuiltOfferCount = rebuilt.size();
+
+        // AbstractVillager#overrideOffers is intended for the merchant
+        // synchronization contract and does not replace the server entity's
+        // protected offer storage here. Assign the inherited field directly.
+        this.offers = rebuilt;
+
+        WitherSkeletonMerchantMod.LOGGER.info(
+            "[WSM trades] Merchant {} rebuild complete: enabled={}, selected={}, built={}, effective={}",
+            this.getUUID(),
+            TradeConfigManager.getEnabledTradeCount(),
+            lastSelectedDefinitionCount,
+            lastBuiltOfferCount,
+            this.getOffers().size()
+        );
     }
 
-    private void scheduleCooldownFor(MerchantOffer offer) {
+    private String getTradeIdForOffer(MerchantOffer offer) {
         int index = this.getOffers().indexOf(offer);
         if (index < 0 || index >= activeTradeIds.size()) {
-            return;
+            return null;
         }
+        return activeTradeIds.get(index);
+    }
 
-        String id = activeTradeIds.get(index);
+    private boolean shouldRestock(String id) {
+        TradeDefinition definition = TradeConfigManager.getById(id);
+        return definition == null || definition.shouldRestock();
+    }
+
+    private void scheduleCooldownFor(String id, MerchantOffer offer) {
         long duration = getCooldownDuration(id);
 
         if (duration <= 0L) {
@@ -303,6 +408,19 @@ public class WitherSkeletonMerchantEntity extends WanderingTrader {
         for (int index = 0; index < count; index++) {
             MerchantOffer offer = offers.get(index);
             String id = activeTradeIds.get(index);
+
+            if (!shouldRestock(id)) {
+                cooldownEnds.remove(id);
+
+                if (offer.isOutOfStock()) {
+                    permanentlyExhaustedTradeIds.add(id);
+                } else if (permanentlyExhaustedTradeIds.contains(id)) {
+                    offer.setToOutOfStock();
+                }
+                continue;
+            }
+
+            permanentlyExhaustedTradeIds.remove(id);
 
             if (!offer.isOutOfStock()) {
                 continue;
@@ -333,6 +451,22 @@ public class WitherSkeletonMerchantEntity extends WanderingTrader {
         long duration = current == null ? 0L : current.getCooldownTicks();
         cooldownDurations.put(id, duration);
         return duration;
+    }
+
+    public int getLastSelectedDefinitionCount() {
+        return lastSelectedDefinitionCount;
+    }
+
+    public int getLastBuiltOfferCount() {
+        return lastBuiltOfferCount;
+    }
+
+    public int getEffectiveOfferCount() {
+        return this.getOffers().size();
+    }
+
+    public int getPermanentlyExhaustedTradeCount() {
+        return permanentlyExhaustedTradeIds.size();
     }
 
     @Override

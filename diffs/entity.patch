@@ -1,0 +1,146 @@
+--- a/entity.java
++++ b/entity.java
+@@ -1,5 +1,6 @@
+ package witherskeletonmerchant.entity;
+ 
++import witherskeletonmerchant.WitherSkeletonMerchantMod;
+ import witherskeletonmerchant.init.WitherSkeletonMerchantModEntities;
+ import witherskeletonmerchant.trade.TradeConfigManager;
+ import witherskeletonmerchant.trade.TradeDefinition;
+@@ -62,6 +63,9 @@
+     private boolean pendingPreserveCooldowns = true;
+     private boolean needsLegacyTradeMigration;
+ 
++    private int lastSelectedDefinitionCount;
++    private int lastBuiltOfferCount;
++
+     public WitherSkeletonMerchantEntity(PlayMessages.SpawnEntity packet, Level level) {
+         this(WitherSkeletonMerchantModEntities.WITHER_SKELETON_MERCHANT.get(), level);
+     }
+@@ -112,9 +116,19 @@
+             ensureConfiguredOffers();
+ 
+             if (this.getOffers().isEmpty()) {
++                // One last forced rebuild avoids keeping a stale empty
++                // MerchantOffers object after summon/load/reload.
++                rebuildTradesFromConfig(true);
++            }
++
++            if (this.getOffers().isEmpty()) {
++                int enabled = TradeConfigManager.getEnabledTradeCount();
+                 player.sendSystemMessage(Component.literal(
+-                    "Wither Skeleton Merchant: the JSON loader returned no usable offer. "
+-                        + "Check config/wither_skeleton_merchant/trades and latest.log."
++                    "Wither Skeleton Merchant: 0 usable offer after rebuild "
++                        + "(enabled JSON=" + enabled
++                        + ", selected=" + lastSelectedDefinitionCount
++                        + ", built=" + lastBuiltOfferCount
++                        + "). Check latest.log."
+                 ));
+                 return InteractionResult.CONSUME;
+             }
+@@ -250,31 +264,69 @@
+         }
+ 
+         List<TradeDefinition> selected = TradeConfigManager.selectOffers(this.getRandom());
++
++        // Defensive recovery: the loader can report valid enabled definitions
++        // while a selection policy still returns an empty list. Stage 2 must
++        // never silently discard those valid trades.
++        if (selected.isEmpty() && TradeConfigManager.getEnabledTradeCount() > 0) {
++            selected = TradeConfigManager.getEnabledTrades();
++        }
++
++        lastSelectedDefinitionCount = selected.size();
++
+         MerchantOffers rebuilt = new MerchantOffers();
+         activeTradeIds.clear();
+         cooldownDurations.clear();
+ 
+         long now = this.level().getGameTime();
++
+         for (TradeDefinition definition : selected) {
+             String id = definition.getId();
+-            MerchantOffer offer = definition.createMerchantOffer();
+-
+-            activeTradeIds.add(id);
+-            cooldownDurations.put(id, definition.getCooldownTicks());
+-
+-            Long cooldownEnd = cooldownEnds.get(id);
+-            if (cooldownEnd != null) {
+-                if (cooldownEnd > now) {
+-                    offer.setToOutOfStock();
+-                } else {
+-                    cooldownEnds.remove(id);
++
++            try {
++                MerchantOffer offer = definition.createMerchantOffer();
++
++                activeTradeIds.add(id);
++                cooldownDurations.put(id, definition.getCooldownTicks());
++
++                Long cooldownEnd = cooldownEnds.get(id);
++                if (cooldownEnd != null) {
++                    if (cooldownEnd > now) {
++                        offer.setToOutOfStock();
++                    } else {
++                        cooldownEnds.remove(id);
++                    }
+                 }
+-            }
+-
+-            rebuilt.add(offer);
+-        }
+-
++
++                rebuilt.add(offer);
++                WitherSkeletonMerchantMod.LOGGER.info(
++                    "[WSM trades] Built offer '{}' for merchant {}",
++                    id,
++                    this.getUUID()
++                );
++            } catch (RuntimeException exception) {
++                WitherSkeletonMerchantMod.LOGGER.error(
++                    "[WSM trades] Failed to build offer '{}' for merchant {}",
++                    id,
++                    this.getUUID(),
++                    exception
++                );
++            }
++        }
++
++        lastBuiltOfferCount = rebuilt.size();
++
++        // Set the AbstractVillager offer field through the vanilla method.
+         this.overrideOffers(rebuilt);
++
++        WitherSkeletonMerchantMod.LOGGER.info(
++            "[WSM trades] Merchant {} rebuild complete: enabled={}, selected={}, built={}, effective={}",
++            this.getUUID(),
++            TradeConfigManager.getEnabledTradeCount(),
++            lastSelectedDefinitionCount,
++            lastBuiltOfferCount,
++            this.getOffers().size()
++        );
+     }
+ 
+     private void scheduleCooldownFor(MerchantOffer offer) {
+@@ -333,6 +385,18 @@
+         long duration = current == null ? 0L : current.getCooldownTicks();
+         cooldownDurations.put(id, duration);
+         return duration;
++    }
++
++    public int getLastSelectedDefinitionCount() {
++        return lastSelectedDefinitionCount;
++    }
++
++    public int getLastBuiltOfferCount() {
++        return lastBuiltOfferCount;
++    }
++
++    public int getEffectiveOfferCount() {
++        return this.getOffers().size();
+     }
+ 
+     @Override

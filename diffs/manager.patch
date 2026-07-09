@@ -1,0 +1,46 @@
+--- a/manager.java
++++ b/manager.java
+@@ -191,6 +191,25 @@
+         return snapshot.byId.get(id);
+     }
+ 
++    /**
++     * Immutable snapshot of every enabled and validated definition.
++     * Exposed so an entity can recover if weighted selection unexpectedly
++     * returns no result while valid definitions still exist.
++     */
++    public static List<TradeDefinition> getEnabledTrades() {
++        ensureLoaded();
++        return snapshot.enabled;
++    }
++
++    public static int getEnabledTradeCount() {
++        ensureLoaded();
++        return snapshot.enabled.size();
++    }
++
++    public static Path getConfigRoot() {
++        return ROOT;
++    }
++
+     public static List<TradeDefinition> selectOffers(RandomSource random) {
+         ensureLoaded();
+         GeneralConfig general = snapshot.general;
+@@ -235,6 +254,17 @@
+                 }
+             }
+             selected.add(candidates.remove(selectedIndex));
++        }
++
++        if (selected.isEmpty() && !enabled.isEmpty()) {
++            WitherSkeletonMerchantMod.LOGGER.error(
++                "[WSM trades] Selection produced 0 offer(s) despite {} enabled definition(s). "
++                    + "Falling back to all enabled definitions. mode={}, offers_per_merchant={}",
++                enabled.size(),
++                general.getSelectionMode(),
++                general.getOffersPerMerchant()
++            );
++            return enabled;
+         }
+ 
+         return List.copyOf(selected);
