@@ -82,6 +82,21 @@ public class WitherSkeletonMerchantEntity extends WanderingTrader {
         return MobType.UNDEAD;
     }
 
+    /**
+     * /summon and some entity-loading paths can deserialize an empty
+     * MerchantOffers object before the first interaction. Because the field is
+     * then non-null, AbstractVillager#getOffers() does not call updateTrades().
+     * Populate the JSON offers explicitly as soon as the server entity enters
+     * the world.
+     */
+    @Override
+    public void onAddedToWorld() {
+        super.onAddedToWorld();
+        if (!this.level().isClientSide) {
+            ensureConfiguredOffers();
+        }
+    }
+
     @Override
     protected void updateTrades() {
         rebuildTradesFromConfig(false);
@@ -94,10 +109,11 @@ public class WitherSkeletonMerchantEntity extends WanderingTrader {
     @Override
     public InteractionResult mobInteract(Player player, InteractionHand hand) {
         if (!this.level().isClientSide) {
-            TradeConfigManager.ensureLoaded();
+            ensureConfiguredOffers();
+
             if (this.getOffers().isEmpty()) {
                 player.sendSystemMessage(Component.literal(
-                    "Wither Skeleton Merchant: no valid enabled trade is loaded. "
+                    "Wither Skeleton Merchant: the JSON loader returned no usable offer. "
                         + "Check config/wither_skeleton_merchant/trades and latest.log."
                 ));
                 return InteractionResult.CONSUME;
@@ -208,8 +224,22 @@ public class WitherSkeletonMerchantEntity extends WanderingTrader {
             }
         }
 
-        MerchantOffers loadedOffers = this.getOffers();
-        needsLegacyTradeMigration = activeTradeIds.size() != loadedOffers.size();
+        // AbstractVillager can deserialize an empty but non-null offers list.
+        // In that case getOffers() will no longer call updateTrades(), so an
+        // empty/empty comparison must still request a migration.
+        MerchantOffers loadedOffers = this.offers;
+        needsLegacyTradeMigration =
+            loadedOffers == null
+                || loadedOffers.isEmpty()
+                || activeTradeIds.size() != loadedOffers.size();
+    }
+
+    private void ensureConfiguredOffers() {
+        TradeConfigManager.ensureLoaded();
+
+        if (this.offers == null || this.offers.isEmpty()) {
+            rebuildTradesFromConfig(true);
+        }
     }
 
     private void rebuildTradesFromConfig(boolean preserveCooldowns) {
