@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "selection_mode": "all",
+  "offers_per_merchant": -1,
+  "reroll_loaded_merchants_on_reload": true,
+  "preserve_cooldowns_on_reload": true,
+  "log_loaded_trades": true
+}

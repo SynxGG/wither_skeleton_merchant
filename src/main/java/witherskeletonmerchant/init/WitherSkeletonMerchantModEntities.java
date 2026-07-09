@@ -3,6 +3,8 @@
  */
 package witherskeletonmerchant.init;
 
+import witherskeletonmerchant.entity.WitherSkeletonMerchantEntity;
+
 import witherskeletonmerchant.WitherSkeletonMerchantMod;
 
 import net.minecraftforge.registries.RegistryObject;

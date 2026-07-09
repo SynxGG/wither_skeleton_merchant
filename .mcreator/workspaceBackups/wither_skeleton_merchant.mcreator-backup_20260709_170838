@@ -4,13 +4,14 @@
       "name": "WitherSkeletonMerchant",
       "type": "livingentity",
       "compiles": true,
-      "locked_code": true,
+      "locked_code": false,
       "registry_name": "wither_skeleton_merchant",
       "metadata": {
         "files": [
           "src/main/java/witherskeletonmerchant/client/renderer/WitherSkeletonMerchantRenderer.java",
           "src/main/java/witherskeletonmerchant/entity/WitherSkeletonMerchantEntity.java",
-          "src/main/resources/assets/wither_skeleton_merchant/models/item/wither_skeleton_merchant_spawn_egg.json"
+          "src/main/resources/assets/wither_skeleton_merchant/models/item/wither_skeleton_merchant_spawn_egg.json",
+          "src/main/resources/data/wither_skeleton_merchant/forge/biome_modifier/wither_skeleton_merchant_biome_modifier.json"
         ]
       }
     }

@@ -1,110 +1,333 @@
 package witherskeletonmerchant.entity;
 
 import witherskeletonmerchant.init.WitherSkeletonMerchantModEntities;
+import witherskeletonmerchant.trade.TradeConfigManager;
+import witherskeletonmerchant.trade.TradeDefinition;
 
-import net.minecraftforge.registries.ForgeRegistries;
-import net.minecraftforge.network.PlayMessages;
 import net.minecraftforge.network.NetworkHooks;
+import net.minecraftforge.network.PlayMessages;
 
-import net.minecraft.world.level.levelgen.Heightmap;
-import net.minecraft.world.level.block.state.BlockState;
-import net.minecraft.world.level.Level;
-import net.minecraft.world.entity.monster.Monster;
-import net.minecraft.world.entity.ai.goal.target.HurtByTargetGoal;
-import net.minecraft.world.entity.ai.goal.RandomStrollGoal;
-import net.minecraft.world.entity.ai.goal.RandomLookAroundGoal;
-import net.minecraft.world.entity.ai.goal.FloatGoal;
-import net.minecraft.world.entity.ai.attributes.Attributes;
-import net.minecraft.world.entity.ai.attributes.AttributeSupplier;
-import net.minecraft.world.entity.SpawnPlacements;
-import net.minecraft.world.entity.PathfinderMob;
-import net.minecraft.world.entity.MobType;
-import net.minecraft.world.entity.Mob;
-import net.minecraft.world.entity.EntityType;
-import net.minecraft.world.damagesource.DamageTypes;
-import net.minecraft.world.damagesource.DamageSource;
-import net.minecraft.world.Difficulty;
-import net.minecraft.sounds.SoundEvent;
-import net.minecraft.resources.ResourceLocation;
-import net.minecraft.network.protocol.game.ClientGamePacketListener;
-import net.minecraft.network.protocol.Packet;
 import net.minecraft.core.BlockPos;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.ListTag;
+import net.minecraft.nbt.StringTag;
+import net.minecraft.nbt.Tag;
+import net.minecraft.network.protocol.Packet;
+import net.minecraft.network.protocol.game.ClientGamePacketListener;
+import net.minecraft.sounds.SoundEvent;
+import net.minecraft.sounds.SoundEvents;
+import net.minecraft.world.Difficulty;
+import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.damagesource.DamageTypes;
+import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.MobType;
+import net.minecraft.world.entity.SpawnPlacements;
+import net.minecraft.world.entity.ai.attributes.AttributeSupplier;
+import net.minecraft.world.entity.ai.attributes.Attributes;
+import net.minecraft.world.entity.monster.Monster;
+import net.minecraft.world.entity.npc.WanderingTrader;
+import net.minecraft.world.item.trading.MerchantOffer;
+import net.minecraft.world.item.trading.MerchantOffers;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.levelgen.Heightmap;
 
-public class WitherSkeletonMerchantEntity extends PathfinderMob {
-	public WitherSkeletonMerchantEntity(PlayMessages.SpawnEntity packet, Level world) {
-		this(WitherSkeletonMerchantModEntities.WITHER_SKELETON_MERCHANT.get(), world);
-	}
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
-	public WitherSkeletonMerchantEntity(EntityType<WitherSkeletonMerchantEntity> type, Level world) {
-		super(type, world);
-		setMaxUpStep(0.6f);
-		xpReward = 0;
-		setNoAi(false);
-	}
+/**
+ * Stage 2: vanilla merchant GUI backed by standalone JSON trade definitions.
+ *
+ * Cooldowns are per entity and per trade id. They use world game time, so they
+ * keep progressing while the merchant's chunk is unloaded and survive server
+ * restarts.
+ */
+public class WitherSkeletonMerchantEntity extends WanderingTrader {
+    private static final String NBT_TRADE_IDS = "WSMTradeIds";
+    private static final String NBT_COOLDOWN_ENDS = "WSMCooldownEnds";
+    private static final String NBT_COOLDOWN_DURATIONS = "WSMCooldownDurations";
 
-	@Override
-	public Packet<ClientGamePacketListener> getAddEntityPacket() {
-		return NetworkHooks.getEntitySpawningPacket(this);
-	}
+    private final List<String> activeTradeIds = new ArrayList<>();
+    private final Map<String, Long> cooldownEnds = new HashMap<>();
+    private final Map<String, Long> cooldownDurations = new HashMap<>();
 
-	@Override
-	protected void registerGoals() {
-		super.registerGoals();
-		this.goalSelector.addGoal(1, new RandomStrollGoal(this, 1));
-		this.targetSelector.addGoal(2, new HurtByTargetGoal(this));
-		this.goalSelector.addGoal(3, new RandomLookAroundGoal(this));
-		this.goalSelector.addGoal(4, new FloatGoal(this));
-	}
+    private boolean pendingTradeConfigReload;
+    private boolean pendingPreserveCooldowns = true;
+    private boolean needsLegacyTradeMigration;
 
-	@Override
-	public MobType getMobType() {
-		return MobType.UNDEAD;
-	}
+    public WitherSkeletonMerchantEntity(PlayMessages.SpawnEntity packet, Level level) {
+        this(WitherSkeletonMerchantModEntities.WITHER_SKELETON_MERCHANT.get(), level);
+    }
 
-	@Override
-	public double getMyRidingOffset() {
-		return -0.35D;
-	}
+    public WitherSkeletonMerchantEntity(EntityType<? extends WanderingTrader> entityType, Level level) {
+        super(entityType, level);
+        this.setMaxUpStep(0.6F);
+        this.xpReward = 0;
+    }
 
-	@Override
-	public SoundEvent getAmbientSound() {
-		return ForgeRegistries.SOUND_EVENTS.getValue(new ResourceLocation("entity.wither_skeleton.ambient"));
-	}
+    @Override
+    public Packet<ClientGamePacketListener> getAddEntityPacket() {
+        return NetworkHooks.getEntitySpawningPacket(this);
+    }
 
-	@Override
-	public void playStepSound(BlockPos pos, BlockState blockIn) {
-		this.playSound(ForgeRegistries.SOUND_EVENTS.getValue(new ResourceLocation("entity.wither_skeleton.step")), 0.15f, 1);
-	}
+    @Override
+    public MobType getMobType() {
+        return MobType.UNDEAD;
+    }
 
-	@Override
-	public SoundEvent getHurtSound(DamageSource ds) {
-		return ForgeRegistries.SOUND_EVENTS.getValue(new ResourceLocation("entity.wither_skeleton.hurt"));
-	}
+    @Override
+    protected void updateTrades() {
+        rebuildTradesFromConfig(false);
+    }
 
-	@Override
-	public SoundEvent getDeathSound() {
-		return ForgeRegistries.SOUND_EVENTS.getValue(new ResourceLocation("entity.wither_skeleton.death"));
-	}
+    @Override
+    public void notifyTrade(MerchantOffer offer) {
+        super.notifyTrade(offer);
+        if (!this.level().isClientSide && offer.isOutOfStock()) {
+            scheduleCooldownFor(offer);
+        }
+    }
 
-	@Override
-	public boolean hurt(DamageSource damagesource, float amount) {
-		if (damagesource.is(DamageTypes.IN_FIRE))
-			return false;
-		return super.hurt(damagesource, amount);
-	}
+    @Override
+    public void aiStep() {
+        super.aiStep();
 
-	public static void init() {
-		SpawnPlacements.register(WitherSkeletonMerchantModEntities.WITHER_SKELETON_MERCHANT.get(), SpawnPlacements.Type.ON_GROUND, Heightmap.Types.MOTION_BLOCKING_NO_LEAVES,
-				(entityType, world, reason, pos, random) -> (world.getDifficulty() != Difficulty.PEACEFUL && Monster.isDarkEnoughToSpawn(world, pos, random) && Mob.checkMobSpawnRules(entityType, world, reason, pos, random)));
-	}
+        if (this.level().isClientSide) {
+            return;
+        }
 
-	public static AttributeSupplier.Builder createAttributes() {
-		AttributeSupplier.Builder builder = Mob.createMobAttributes();
-		builder = builder.add(Attributes.MOVEMENT_SPEED, 0.3);
-		builder = builder.add(Attributes.MAX_HEALTH, 10);
-		builder = builder.add(Attributes.ARMOR, 0);
-		builder = builder.add(Attributes.ATTACK_DAMAGE, 3);
-		builder = builder.add(Attributes.FOLLOW_RANGE, 16);
-		return builder;
-	}
+        if (needsLegacyTradeMigration && !this.isTrading()) {
+            needsLegacyTradeMigration = false;
+            rebuildTradesFromConfig(false);
+        }
+
+        if (pendingTradeConfigReload && !this.isTrading()) {
+            boolean preserve = pendingPreserveCooldowns;
+            pendingTradeConfigReload = false;
+            pendingPreserveCooldowns = true;
+            rebuildTradesFromConfig(preserve);
+        }
+
+        if (this.tickCount % 20 == 0) {
+            updateCooldowns();
+        }
+    }
+
+    /**
+     * Called by /wsm reload and /wsm refresh.
+     * Active trade screens are not mutated in-place; the refresh is applied as
+     * soon as the current player closes the menu.
+     */
+    public void requestTradeConfigReload(boolean preserveCooldowns) {
+        if (this.level().isClientSide) {
+            return;
+        }
+        if (this.isTrading()) {
+            pendingTradeConfigReload = true;
+            pendingPreserveCooldowns = preserveCooldowns;
+        } else {
+            rebuildTradesFromConfig(preserveCooldowns);
+        }
+    }
+
+    @Override
+    public void addAdditionalSaveData(CompoundTag tag) {
+        super.addAdditionalSaveData(tag);
+
+        ListTag ids = new ListTag();
+        for (String id : activeTradeIds) {
+            ids.add(StringTag.valueOf(id));
+        }
+        tag.put(NBT_TRADE_IDS, ids);
+
+        CompoundTag ends = new CompoundTag();
+        for (Map.Entry<String, Long> entry : cooldownEnds.entrySet()) {
+            ends.putLong(entry.getKey(), entry.getValue());
+        }
+        tag.put(NBT_COOLDOWN_ENDS, ends);
+
+        CompoundTag durations = new CompoundTag();
+        for (Map.Entry<String, Long> entry : cooldownDurations.entrySet()) {
+            durations.putLong(entry.getKey(), entry.getValue());
+        }
+        tag.put(NBT_COOLDOWN_DURATIONS, durations);
+    }
+
+    @Override
+    public void readAdditionalSaveData(CompoundTag tag) {
+        super.readAdditionalSaveData(tag);
+
+        activeTradeIds.clear();
+        cooldownEnds.clear();
+        cooldownDurations.clear();
+
+        if (tag.contains(NBT_TRADE_IDS, Tag.TAG_LIST)) {
+            ListTag ids = tag.getList(NBT_TRADE_IDS, Tag.TAG_STRING);
+            for (int index = 0; index < ids.size(); index++) {
+                activeTradeIds.add(ids.getString(index));
+            }
+        }
+
+        if (tag.contains(NBT_COOLDOWN_ENDS, Tag.TAG_COMPOUND)) {
+            CompoundTag ends = tag.getCompound(NBT_COOLDOWN_ENDS);
+            for (String id : ends.getAllKeys()) {
+                cooldownEnds.put(id, ends.getLong(id));
+            }
+        }
+
+        if (tag.contains(NBT_COOLDOWN_DURATIONS, Tag.TAG_COMPOUND)) {
+            CompoundTag durations = tag.getCompound(NBT_COOLDOWN_DURATIONS);
+            for (String id : durations.getAllKeys()) {
+                cooldownDurations.put(id, durations.getLong(id));
+            }
+        }
+
+        MerchantOffers loadedOffers = this.getOffers();
+        needsLegacyTradeMigration = activeTradeIds.size() != loadedOffers.size();
+    }
+
+    private void rebuildTradesFromConfig(boolean preserveCooldowns) {
+        TradeConfigManager.ensureLoaded();
+
+        if (!preserveCooldowns) {
+            cooldownEnds.clear();
+        }
+
+        List<TradeDefinition> selected = TradeConfigManager.selectOffers(this.getRandom());
+        MerchantOffers rebuilt = new MerchantOffers();
+        activeTradeIds.clear();
+        cooldownDurations.clear();
+
+        long now = this.level().getGameTime();
+        for (TradeDefinition definition : selected) {
+            String id = definition.getId();
+            MerchantOffer offer = definition.createMerchantOffer();
+
+            activeTradeIds.add(id);
+            cooldownDurations.put(id, definition.getCooldownTicks());
+
+            Long cooldownEnd = cooldownEnds.get(id);
+            if (cooldownEnd != null) {
+                if (cooldownEnd > now) {
+                    offer.setToOutOfStock();
+                } else {
+                    cooldownEnds.remove(id);
+                }
+            }
+
+            rebuilt.add(offer);
+        }
+
+        this.overrideOffers(rebuilt);
+    }
+
+    private void scheduleCooldownFor(MerchantOffer offer) {
+        int index = this.getOffers().indexOf(offer);
+        if (index < 0 || index >= activeTradeIds.size()) {
+            return;
+        }
+
+        String id = activeTradeIds.get(index);
+        long duration = getCooldownDuration(id);
+
+        if (duration <= 0L) {
+            offer.resetUses();
+            cooldownEnds.remove(id);
+            return;
+        }
+
+        cooldownEnds.putIfAbsent(id, this.level().getGameTime() + duration);
+    }
+
+    private void updateCooldowns() {
+        MerchantOffers offers = this.getOffers();
+        long now = this.level().getGameTime();
+        int count = Math.min(offers.size(), activeTradeIds.size());
+
+        for (int index = 0; index < count; index++) {
+            MerchantOffer offer = offers.get(index);
+            String id = activeTradeIds.get(index);
+
+            if (!offer.isOutOfStock()) {
+                continue;
+            }
+
+            long duration = getCooldownDuration(id);
+            if (duration <= 0L) {
+                offer.resetUses();
+                cooldownEnds.remove(id);
+                continue;
+            }
+
+            long end = cooldownEnds.computeIfAbsent(id, ignored -> now + duration);
+            if (now >= end) {
+                offer.resetUses();
+                cooldownEnds.remove(id);
+            }
+        }
+    }
+
+    private long getCooldownDuration(String id) {
+        Long saved = cooldownDurations.get(id);
+        if (saved != null) {
+            return saved;
+        }
+
+        TradeDefinition current = TradeConfigManager.getById(id);
+        long duration = current == null ? 0L : current.getCooldownTicks();
+        cooldownDurations.put(id, duration);
+        return duration;
+    }
+
+    @Override
+    protected SoundEvent getAmbientSound() {
+        return SoundEvents.WITHER_SKELETON_AMBIENT;
+    }
+
+    @Override
+    protected SoundEvent getHurtSound(DamageSource damageSource) {
+        return SoundEvents.WITHER_SKELETON_HURT;
+    }
+
+    @Override
+    protected SoundEvent getDeathSound() {
+        return SoundEvents.WITHER_SKELETON_DEATH;
+    }
+
+    @Override
+    protected void playStepSound(BlockPos pos, BlockState state) {
+        this.playSound(SoundEvents.WITHER_SKELETON_STEP, 0.15F, 1.0F);
+    }
+
+    @Override
+    public boolean hurt(DamageSource source, float amount) {
+        if (source.is(DamageTypes.IN_FIRE) || source.is(DamageTypes.ON_FIRE)) {
+            return false;
+        }
+        return super.hurt(source, amount);
+    }
+
+    public static void init() {
+        SpawnPlacements.register(
+            WitherSkeletonMerchantModEntities.WITHER_SKELETON_MERCHANT.get(),
+            SpawnPlacements.Type.ON_GROUND,
+            Heightmap.Types.MOTION_BLOCKING_NO_LEAVES,
+            (entityType, level, reason, pos, random) ->
+                level.getDifficulty() != Difficulty.PEACEFUL
+                    && Monster.isDarkEnoughToSpawn(level, pos, random)
+                    && Mob.checkMobSpawnRules(entityType, level, reason, pos, random)
+        );
+    }
+
+    public static AttributeSupplier.Builder createAttributes() {
+        return Mob.createMobAttributes()
+            .add(Attributes.MOVEMENT_SPEED, 0.30D)
+            .add(Attributes.MAX_HEALTH, 20.0D)
+            .add(Attributes.ARMOR, 0.0D)
+            .add(Attributes.ATTACK_DAMAGE, 3.0D)
+            .add(Attributes.FOLLOW_RANGE, 16.0D);
+    }
 }

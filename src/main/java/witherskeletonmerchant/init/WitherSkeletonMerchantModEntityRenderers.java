@@ -3,6 +3,8 @@
  */
 package witherskeletonmerchant.init;
 
+import witherskeletonmerchant.client.renderer.WitherSkeletonMerchantRenderer;
+
 import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.client.event.EntityRenderersEvent;
